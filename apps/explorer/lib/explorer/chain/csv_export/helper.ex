@@ -18,10 +18,43 @@ defmodule Explorer.Chain.CsvExport.Helper do
   @page_size 150
   @default_paging_options %PagingOptions{page_size: @page_size}
 
+  # Leading characters that spreadsheet applications (Excel, Google Sheets,
+  # LibreOffice) read as the start of a formula rather than literal text.
+  @formula_trigger_prefixes ["=", "+", "-", "@"]
+
   def dump_to_stream(items) do
     items
+    |> Stream.map(&neutralize_formula_cells/1)
     |> RFC4180.dump_to_stream()
   end
+
+  # Exported rows can contain attacker-controlled text - most notably a
+  # token's on-chain name or symbol, which anyone can set to anything when
+  # deploying a contract, or a transaction's revert reason, which anyone can
+  # set when writing a contract. A cell starting with =, +, -, or @ is
+  # prefixed with a leading apostrophe, the standard mitigation for CSV
+  # (formula) injection: spreadsheet applications render the cell as literal
+  # text starting with the original character, and plain CSV readers ignore
+  # the apostrophe entirely.
+  #
+  # Only string cells are considered. Every other value (an integer, a
+  # Decimal, a DateTime, nil, ...) is produced by our own code, not by
+  # attacker-supplied text, and is left untouched - in particular, a negative
+  # Decimal or integer legitimately renders with a leading "-" and must not be
+  # turned into a text cell.
+  defp neutralize_formula_cells(row) when is_list(row) do
+    Enum.map(row, &neutralize_cell/1)
+  end
+
+  defp neutralize_cell(cell) when is_binary(cell) do
+    if String.starts_with?(cell, @formula_trigger_prefixes) do
+      "'" <> cell
+    else
+      cell
+    end
+  end
+
+  defp neutralize_cell(cell), do: cell
 
   def page_size, do: @page_size
 
