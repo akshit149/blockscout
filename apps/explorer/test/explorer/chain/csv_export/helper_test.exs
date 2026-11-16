@@ -3,6 +3,7 @@ defmodule Explorer.Chain.CsvExport.HelperTest do
   use Explorer.DataCase, async: true
 
   alias Explorer.Chain.CsvExport.Helper
+  alias NimbleCSV.RFC4180
 
   setup do
     original_config = Application.get_env(:explorer, Explorer.Chain.CsvExport)
@@ -91,6 +92,32 @@ defmodule Explorer.Chain.CsvExport.HelperTest do
       result = stream |> Enum.to_list() |> Enum.join("")
       assert result =~ "a,b,c"
       assert result =~ "1,2,3"
+    end
+
+    test "neutralizes cells that would be read as a spreadsheet formula" do
+      # Exported CSVs can contain attacker-controlled strings, such as a
+      # token's on-chain name or symbol, which anyone can set to anything
+      # when deploying a contract. Spreadsheet applications (Excel, Google
+      # Sheets, LibreOffice) treat a cell starting with =, +, -, or @ as a
+      # formula rather than literal text, so such a value must not reach the
+      # file unneutralized. A leading apostrophe is the standard mitigation:
+      # spreadsheet software renders it as literal text starting with the
+      # original character, and plain CSV readers ignore it entirely.
+      #
+      # Parsing the output back into fields (rather than matching on raw
+      # bytes) is deliberate: a neutralized cell like "'=1+1" still contains
+      # the substring "=1+1", so a raw substring check can't tell a
+      # neutralized cell from an unneutralized one.
+      rows = [["=1+1", "+1+1", "-1+1", "@SUM(1+1)", "safe value", "123"]]
+
+      [fields] =
+        rows
+        |> Helper.dump_to_stream()
+        |> Enum.to_list()
+        |> IO.iodata_to_binary()
+        |> RFC4180.parse_string(skip_headers: false)
+
+      assert fields == ["'=1+1", "'+1+1", "'-1+1", "'@SUM(1+1)", "safe value", "123"]
     end
   end
 end
